@@ -117,26 +117,56 @@ function leftFillRow(row: string[], maxCols: number): string[] {
   return filled
 }
 
+function lastNonBlankIndex(row: unknown[] | undefined): number {
+  if (!row || row.length === 0) return -1
+  for (let i = row.length - 1; i >= 0; i--) {
+    if (!isBlankCell(row[i])) return i
+  }
+  return -1
+}
+
+function hasLetter(text: string): boolean {
+  // Conservative: headers are mostly textual (Korean/English). Treat digits-only as non-header.
+  return /[A-Za-z\u3131-\u318E\uAC00-\uD7A3]/.test(text)
+}
+
+function isLikelyTextHeaderRow(row: unknown[] | undefined, colLimit: number): boolean {
+  if (!row || colLimit < 0) return false
+
+  let nonEmpty = 0
+  let withLetter = 0
+  for (let c = 0; c <= colLimit; c++) {
+    const v = String(row[c] ?? '').trim()
+    if (!v) continue
+    nonEmpty++
+    if (hasLetter(v)) withLetter++
+  }
+  if (nonEmpty === 0) return false
+
+  // Be conservative: require majority of non-empty header cells to include letters.
+  return withLetter / nonEmpty >= 0.6
+}
+
 function guessHeaderRowCount(values: string[][]): number {
-  // We support up to 3 header rows.
-  // Heuristic: treat additional rows as header if they provide labels for columns
-  // where upper rows are blank (common with merged header cells).
   const r1 = values[0] ?? []
   const r2 = values[1] ?? []
   const r3 = values[2] ?? []
 
-  const maxCols = Math.max(r1.length, r2.length, r3.length)
-  if (values.length < 2) return 1
+  // Important: limit header detection to the *actual* top header width.
+  // Values API may omit trailing blanks; lower rows can be longer and cause false positives.
+  const topLastCol = lastNonBlankIndex(r1)
+  if (values.length < 2 || topLastCol < 0) return 1
 
-  const hasSecondLevel = Array.from({ length: maxCols }).some(
-    (_, c) => isBlankCell(r1[c]) && !isBlankCell(r2[c]),
-  )
+  const hasSecondLevel =
+    isLikelyTextHeaderRow(r2, topLastCol) &&
+    Array.from({ length: topLastCol + 1 }).some((_, c) => isBlankCell(r1[c]) && !isBlankCell(r2[c]))
 
   if (values.length < 3) return hasSecondLevel ? 2 : 1
 
-  const hasThirdLevel = Array.from({ length: maxCols }).some(
-    (_, c) => (isBlankCell(r2[c]) && !isBlankCell(r3[c])) || (isBlankCell(r1[c]) && !isBlankCell(r3[c])),
-  )
+  const hasThirdLevel =
+    hasSecondLevel &&
+    isLikelyTextHeaderRow(r3, topLastCol) &&
+    Array.from({ length: topLastCol + 1 }).some((_, c) => isBlankCell(r2[c]) && !isBlankCell(r3[c]))
 
   if (hasThirdLevel) return 3
   if (hasSecondLevel) return 2
@@ -146,7 +176,8 @@ function guessHeaderRowCount(values: string[][]): number {
 
 function buildMultiRowHeaders(values: string[][], headerRowCount: number): string[] {
   const headerRows = values.slice(0, headerRowCount)
-  const maxCols = Math.max(...headerRows.map((r) => r.length), 0)
+  const topLastCol = lastNonBlankIndex(headerRows[0])
+  const maxCols = Math.max(0, topLastCol + 1)
 
   const filledRows = headerRows.map((r) => leftFillRow(r, maxCols))
 
@@ -165,11 +196,11 @@ function buildMultiRowHeaders(values: string[][], headerRowCount: number): strin
 export function mapValuesToObjects(values: string[][] | undefined): SheetRowObject[] {
   if (!values || values.length === 0) return []
 
-  const headerRowCount = guessHeaderRowCount(values)
+  const headerRowCount = Math.min(3, Math.max(1, guessHeaderRowCount(values)))
   const headers =
     headerRowCount <= 1
       ? normalizeHeaders(values[0] ?? [])
-      : buildMultiRowHeaders(values, Math.min(3, Math.max(1, headerRowCount)))
+      : buildMultiRowHeaders(values, headerRowCount)
 
   const rows = values.slice(Math.min(headerRowCount, values.length))
   return rows
