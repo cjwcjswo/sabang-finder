@@ -102,12 +102,76 @@ function normalizeHeaders(rawHeaders: string[]): string[] {
   })
 }
 
+function isBlankCell(v: unknown): boolean {
+  return String(v ?? '').trim().length === 0
+}
+
+function leftFillRow(row: string[], maxCols: number): string[] {
+  const filled = Array.from({ length: maxCols }, (_, i) => String(row[i] ?? ''))
+  let last = ''
+  for (let c = 0; c < filled.length; c++) {
+    const cur = filled[c].trim()
+    if (cur) last = cur
+    else if (last) filled[c] = last
+  }
+  return filled
+}
+
+function guessHeaderRowCount(values: string[][]): number {
+  // We support up to 3 header rows.
+  // Heuristic: treat additional rows as header if they provide labels for columns
+  // where upper rows are blank (common with merged header cells).
+  const r1 = values[0] ?? []
+  const r2 = values[1] ?? []
+  const r3 = values[2] ?? []
+
+  const maxCols = Math.max(r1.length, r2.length, r3.length)
+  if (values.length < 2) return 1
+
+  const hasSecondLevel = Array.from({ length: maxCols }).some(
+    (_, c) => isBlankCell(r1[c]) && !isBlankCell(r2[c]),
+  )
+
+  if (values.length < 3) return hasSecondLevel ? 2 : 1
+
+  const hasThirdLevel = Array.from({ length: maxCols }).some(
+    (_, c) => (isBlankCell(r2[c]) && !isBlankCell(r3[c])) || (isBlankCell(r1[c]) && !isBlankCell(r3[c])),
+  )
+
+  if (hasThirdLevel) return 3
+  if (hasSecondLevel) return 2
+
+  return 1
+}
+
+function buildMultiRowHeaders(values: string[][], headerRowCount: number): string[] {
+  const headerRows = values.slice(0, headerRowCount)
+  const maxCols = Math.max(...headerRows.map((r) => r.length), 0)
+
+  const filledRows = headerRows.map((r) => leftFillRow(r, maxCols))
+
+  const rawKeys = Array.from({ length: maxCols }).map((_, c) => {
+    const parts = filledRows
+      .map((r) => String(r[c] ?? '').trim())
+      .filter((p) => p.length > 0)
+
+    const key = parts.join('/')
+    return key || `__col${c + 1}`
+  })
+
+  return normalizeHeaders(rawKeys)
+}
+
 export function mapValuesToObjects(values: string[][] | undefined): SheetRowObject[] {
   if (!values || values.length === 0) return []
-  const rawHeaders = values[0] ?? []
-  const headers = normalizeHeaders(rawHeaders)
 
-  const rows = values.slice(1)
+  const headerRowCount = guessHeaderRowCount(values)
+  const headers =
+    headerRowCount <= 1
+      ? normalizeHeaders(values[0] ?? [])
+      : buildMultiRowHeaders(values, Math.min(3, Math.max(1, headerRowCount)))
+
+  const rows = values.slice(Math.min(headerRowCount, values.length))
   return rows
     .filter((r) => Array.isArray(r) && r.some((cell) => String(cell ?? '').trim().length > 0))
     .map((r) => {
